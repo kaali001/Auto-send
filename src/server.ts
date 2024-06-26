@@ -1,5 +1,4 @@
 import express from 'express';
-import { google } from 'googleapis';
 import fs from 'fs';
 import path from 'path';
 import 'dotenv/config';
@@ -9,18 +8,28 @@ import {
   getGmailClient,
   fetchEmails as fetchGmailEmails
 } from './gmail';
-import { categorizeEmail, generateResponse } from './openai';
-import { addEmailTask } from './scheduler';
 import {
   generateAuthUrl as generateOutlookAuthUrl,
   setCredentials as setOutlookCredentials,
   fetchEmails as fetchOutlookEmails
 } from './outlook';
+import { categorizeEmail, generateResponse } from './openai';
+import { addEmailTask } from './scheduler';
+import nodemailer from 'nodemailer';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
+
+// Initialize Nodemailer transporter
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.EMAIL_USER!, // Replace with your Gmail address
+    pass: process.env.EMAIL_PASS!, // Replace with your Gmail password or app-specific password
+  },
+});
 
 // Utility to save tokens
 function saveToken(service: string, token: any) {
@@ -68,18 +77,63 @@ app.get('/emails/outlook', async (req, res) => {
 // Categorize email and generate response
 app.post('/process-email', async (req, res) => {
   const { emailContent } = req.body;
-  const category = await categorizeEmail(emailContent);
-  const response = await generateResponse(emailContent);
 
-  res.json({ category, response });
+  try {
+    // Categorize the email content
+    const category = await categorizeEmail(emailContent);
+
+    // Generate a response based on the category
+    const response = await generateResponse(emailContent);
+
+    // Get sender's email address from email content
+    const senderEmail = getEmailAddressFromEmailContent(emailContent); // Implement this function
+    if (!senderEmail) {
+      throw new Error('Sender email address not found in email content');
+    }
+
+    // Send the response back to the sender
+    await sendEmail(senderEmail, 'Response to Your Email', response);
+
+    // Schedule email processing task
+    await addEmailTask(emailContent);
+
+    res.json({ category, response });
+  } catch (error) {
+    console.error('Error processing email:', error);
+    res.status(500).json({ error: 'Error processing email' });
+  }
 });
 
-// Schedule email processing tasks
-app.post('/schedule-email', async (req, res) => {
-  const { emailContent } = req.body;
-  await addEmailTask(emailContent);
-  res.send('Email task scheduled successfully.');
-});
+// Function to send email
+async function sendEmail(to: string, subject: string, text: string) {
+  try {
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER!,
+      to,
+      subject,
+      text,
+    });
+    console.log(`Email sent to ${to}`);
+  } catch (error) {
+    console.error(`Error sending email: ${error}`);
+    throw error; // Propagate the error
+  }
+}
+
+// Function to extract email address from email content
+function getEmailAddressFromEmailContent(emailContent: string): string | null {
+  // Implement logic to extract email address from email content
+  // For example, parse the email content to find sender's email address
+  // This is a basic example, replace with your actual implementation
+
+  const emailRegex = /[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}/; // Basic email regex pattern
+  const match = emailContent.match(emailRegex);
+  if (match) {
+    return match[0]; // Return the first email address found in the content
+  } else {
+    return null; // Return null if no email address found
+  }
+}
 
 // Start Express server
 app.listen(PORT, () => {
